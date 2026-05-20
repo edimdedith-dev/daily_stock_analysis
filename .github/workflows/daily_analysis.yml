@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '0 10 * * 1-5'  # 北京时间18:00（UTC+8），周一到周五
   workflow_dispatch:
+    inputs:
+      branch:
+        description: '运行分支'
+        required: false
+        default: 'pro'
 
 jobs:
   analyze:
@@ -25,14 +30,14 @@ jobs:
       AGENT_SKILLS: ${{ secrets.AGENT_SKILLS }}
       LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
 
-      # 通知（如需要可填入）
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      WECHAT_WEBHOOK_URL: ${{ secrets.WECHAT_WEBHOOK_URL }}
+      # 备用股票列表（筛选失败时使用）
+      STOCK_LIST: ${{ secrets.STOCK_LIST }}
 
     steps:
-      - name: 检出代码
+      - name: 检出代码（pro分支）
         uses: actions/checkout@v4
+        with:
+          ref: pro
 
       - name: 设置Python环境
         uses: actions/setup-python@v5
@@ -42,40 +47,42 @@ jobs:
       - name: 安装依赖
         run: |
           pip install -r requirements.txt
-          pip install tushare pandas
+          pip install akshare pandas
 
       - name: 创建必要目录
         run: mkdir -p logs reports
 
-      - name: 🔍 第一步：自动筛选今日涨停股（七因子初筛）
+      - name: 🔍 第一步：双名单自动筛选（涨停+主力流入）
         run: |
-          echo "================================"
-          echo "🚀 开始全市场涨停股自动筛选..."
-          echo "================================"
+          echo "================================================"
+          echo "🚀 开始全市场双名单综合筛选..."
+          echo "================================================"
+
+          # 运行筛选脚本
           python auto_screener.py
-          
+
           # 读取筛选结果
-          if [ -f screened_stocks.txt ]; then
+          if [ -f screened_stocks.txt ] && [ -s screened_stocks.txt ]; then
             SCREENED=$(cat screened_stocks.txt)
-            echo "✅ 筛选完成: $SCREENED"
+            echo "✅ 筛选成功: $SCREENED"
             echo "STOCK_LIST=$SCREENED" >> $GITHUB_ENV
           else
-            echo "⚠️ 筛选结果为空，使用备用股票列表"
+            echo "⚠️ 筛选结果为空，使用备用列表"
             echo "STOCK_LIST=${{ secrets.STOCK_LIST }}" >> $GITHUB_ENV
           fi
 
-      - name: 📊 第二步：深度分析筛选出的股票
+      - name: 📊 第二步：七因子深度分析
         run: |
-          echo "================================"
-          echo "🔬 开始对候选股票进行深度分析..."
-          echo "STOCK_LIST = $STOCK_LIST"
-          echo "================================"
-          
+          echo "================================================"
+          echo "🔬 开始对候选股票深度分析..."
+          echo "股票列表: $STOCK_LIST"
+          echo "================================================"
+
           if [ -z "$STOCK_LIST" ]; then
             echo "⚠️ 股票列表为空，跳过分析"
             exit 0
           fi
-          
+
           python main.py --stocks "$STOCK_LIST" --market-review
 
       - name: 上传分析报告
@@ -86,17 +93,21 @@ jobs:
           path: |
             reports/
             logs/
+            screened_stocks.txt
           retention-days: 7
 
       - name: 显示运行结果
         if: always()
         run: |
           echo ""
-          echo "================================"
-          echo "📊 分析完成"
-          echo "================================"
+          echo "================================================"
+          echo "📊 本次运行完成"
+          echo "================================================"
+          echo "筛选出的股票："
+          cat screened_stocks.txt 2>/dev/null || echo "无筛选结果"
+          echo ""
           echo "生成的报告："
           ls -la reports/ 2>/dev/null || echo "暂无报告"
           echo ""
-          echo "📋 最近日志（最后30行）："
-          tail -30 logs/stock_analysis_$(date +%Y%m%d).log 2>/dev/null || echo "无日志"
+          echo "最近日志（最后20行）："
+          tail -20 logs/stock_analysis_$(date +%Y%m%d).log 2>/dev/null || echo "无日志"

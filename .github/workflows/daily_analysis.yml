@@ -83,7 +83,7 @@ jobs:
             exit 0
           fi
 
-          python main.py --stocks "$STOCK_LIST" --market-review
+          python main.py --stocks "$STOCK_LIST"
 
       - name: 上传分析报告
         uses: actions/upload-artifact@v4

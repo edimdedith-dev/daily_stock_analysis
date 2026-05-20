@@ -20,6 +20,8 @@ jobs:
       AGENT_SKILLS: ${{ secrets.AGENT_SKILLS }}
       LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
       STOCK_LIST: ${{ secrets.STOCK_LIST }}
+      EFINANCE_PRIORITY: 99
+      AKSHARE_PRIORITY: 99
 
     steps:
       - name: 检出代码（pro分支）

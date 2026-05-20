@@ -2,35 +2,23 @@ name: 每日股票分析
 
 on:
   schedule:
-    - cron: '0 10 * * 1-5'  # 北京时间18:00（UTC+8），周一到周五
+    - cron: '0 10 * * 1-5'  # 北京时间18:00，周一到周五
   workflow_dispatch:
-    inputs:
-      branch:
-        description: '运行分支'
-        required: false
-        default: 'pro'
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45  # 最多45分钟，超时强制结束
 
     env:
-      # AI模型
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DEEPSEEK_API_KEYS: ${{ secrets.DEEPSEEK_API_KEYS }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-
-      # 数据源
       TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
-
-      # 策略
       AGENT_SKILLS: ${{ secrets.AGENT_SKILLS }}
       LLM_PROVIDER: ${{ secrets.LLM_PROVIDER }}
-
-      # 备用股票列表（筛选失败时使用）
       STOCK_LIST: ${{ secrets.STOCK_LIST }}
 
     steps:
@@ -47,43 +35,37 @@ jobs:
       - name: 安装依赖
         run: |
           pip install -r requirements.txt
-          pip install akshare pandas
+          pip install tushare pandas
 
       - name: 创建必要目录
         run: mkdir -p logs reports
 
-      - name: 🔍 第一步：双名单自动筛选（涨停+主力流入）
+      - name: 🔍 第一步：双名单自动筛选
         run: |
           echo "================================================"
           echo "🚀 开始全市场双名单综合筛选..."
           echo "================================================"
-
-          # 运行筛选脚本
-          python auto_screener.py
-
-          # 读取筛选结果
+          timeout 300 python auto_screener.py || echo "⚠️ 筛选超时"
           if [ -f screened_stocks.txt ] && [ -s screened_stocks.txt ]; then
             SCREENED=$(cat screened_stocks.txt)
             echo "✅ 筛选成功: $SCREENED"
             echo "STOCK_LIST=$SCREENED" >> $GITHUB_ENV
           else
-            echo "⚠️ 筛选结果为空，使用备用列表"
+            echo "⚠️ 筛选为空，使用备用列表"
             echo "STOCK_LIST=${{ secrets.STOCK_LIST }}" >> $GITHUB_ENV
           fi
 
       - name: 📊 第二步：七因子深度分析
         run: |
           echo "================================================"
-          echo "🔬 开始对候选股票深度分析..."
+          echo "🔬 开始深度分析..."
           echo "股票列表: $STOCK_LIST"
           echo "================================================"
-
           if [ -z "$STOCK_LIST" ]; then
-            echo "⚠️ 股票列表为空，跳过分析"
+            echo "⚠️ 股票列表为空，跳过"
             exit 0
           fi
-
-          python main.py --stocks "$STOCK_LIST"
+          timeout 1800 python main.py --stocks "$STOCK_LIST" || echo "⚠️ 分析超时，已强制结束"
 
       - name: 上传分析报告
         uses: actions/upload-artifact@v4
@@ -99,7 +81,6 @@ jobs:
       - name: 显示运行结果
         if: always()
         run: |
-          echo ""
           echo "================================================"
           echo "📊 本次运行完成"
           echo "================================================"

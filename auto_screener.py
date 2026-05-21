@@ -68,17 +68,16 @@ def fetch_limit_up(pro, trade_date):
 # ============================================================
 def fetch_moneyflow_top(pro, trade_date):
     print(f"\n💰 获取{trade_date}主力资金净流入名单（Tushare）...")
+    # 等待3秒避免频率超限（moneyflow接口限制2次/小时）
+    time.sleep(3)
     try:
-        # 获取全市场资金流向，按净流入排序取Top50
         df = pro.moneyflow(
             trade_date=trade_date,
             fields='ts_code,buy_lg_amount,sell_lg_amount,buy_elg_amount,sell_elg_amount,net_mf_amount'
         )
         if df is not None and not df.empty:
             df['net_mf_amount'] = pd.to_numeric(df['net_mf_amount'], errors='coerce').fillna(0)
-            # 只取净流入为正的
             df = df[df['net_mf_amount'] > 0]
-            # 按净流入排序
             df = df.sort_values('net_mf_amount', ascending=False).head(50)
             df['source'] = 'moneyflow'
             df['source_weight'] = 0.4
@@ -86,6 +85,30 @@ def fetch_moneyflow_top(pro, trade_date):
             return df
     except Exception as e:
         print(f"❌ 主力资金流向获取失败: {e}")
+    return pd.DataFrame()
+
+# ============================================================
+# 第三名单：龙虎榜（机构/游资买入信号）
+# ============================================================
+def fetch_top_list(pro, trade_date):
+    print(f"\n🏆 获取{trade_date}龙虎榜数据（Tushare）...")
+    time.sleep(2)
+    try:
+        df = pro.top_list(
+            trade_date=trade_date,
+            fields='ts_code,name,close,pct_chg,turnover_rate,buy_amount,sell_amount,net_amount,reason'
+        )
+        if df is not None and not df.empty:
+            # 只取净买入为正的（机构/游资在买）
+            df['net_amount'] = pd.to_numeric(df['net_amount'], errors='coerce').fillna(0)
+            df = df[df['net_amount'] > 0]
+            df = df.sort_values('net_amount', ascending=False)
+            # 去重，每只股票只保留一条
+            df = df.drop_duplicates(subset='ts_code', keep='first')
+            print(f"✅ 龙虎榜数据获取成功：{len(df)}只")
+            return df
+    except Exception as e:
+        print(f"⚠️ 龙虎榜获取失败: {e}")
     return pd.DataFrame()
 
 # ============================================================
@@ -209,6 +232,11 @@ def score_stock(row, basics_df, source):
     # 因子G：技术形态（5分）- 基础分
     score += 3
 
+    # 龙虎榜加分（+10分）
+    if row.get('in_top_list', False):
+        score += 10
+        print(f"   🏆 {ts_code} 出现在龙虎榜，+10分")
+
     # 来源权重加成
     weight = float(row.get('source_weight', 0.5))
     final = round(score * weight + score * (1 - weight) * 0.8)
@@ -246,26 +274,28 @@ def main():
 
     pro = init_tushare()
 
-    # 1. 获取两个名单
+    # 1. 获取三个名单
     limit_up_df = fetch_limit_up(pro, trade_date)
-    time.sleep(1)
     moneyflow_df = fetch_moneyflow_top(pro, trade_date)
+    top_list_df = fetch_top_list(pro, trade_date)
 
     # 2. 合并股票池
     all_stocks = {}
 
+    # 涨停名单（权重60%）
     if not limit_up_df.empty and 'ts_code' in limit_up_df.columns:
         for _, row in limit_up_df.iterrows():
             code = row['ts_code']
             all_stocks[code] = dict(row)
             all_stocks[code]['source'] = 'limit_up'
             all_stocks[code]['source_weight'] = 0.6
+            all_stocks[code]['in_top_list'] = False
 
+    # 主力流入名单（权重40%）
     if not moneyflow_df.empty and 'ts_code' in moneyflow_df.columns:
         for _, row in moneyflow_df.iterrows():
             code = row['ts_code']
             if code in all_stocks:
-                # 两个名单都有，最强信号
                 all_stocks[code]['net_mf_amount'] = row.get('net_mf_amount', 0)
                 all_stocks[code]['source'] = 'both'
                 all_stocks[code]['source_weight'] = 1.0
@@ -273,10 +303,21 @@ def main():
                 all_stocks[code] = dict(row)
                 all_stocks[code]['source'] = 'moneyflow'
                 all_stocks[code]['source_weight'] = 0.4
+                all_stocks[code]['in_top_list'] = False
+
+    # 龙虎榜加分（出现在龙虎榜的额外+10分）
+    top_list_codes = set()
+    if not top_list_df.empty and 'ts_code' in top_list_df.columns:
+        top_list_codes = set(top_list_df['ts_code'].tolist())
+        for code in top_list_codes:
+            if code in all_stocks:
+                all_stocks[code]['in_top_list'] = True
 
     print(f"\n📊 合并后共{len(all_stocks)}只候选")
     both_count = sum(1 for v in all_stocks.values() if v.get('source') == 'both')
+    tl_count = sum(1 for v in all_stocks.values() if v.get('in_top_list'))
     print(f"   ⭐ 两个名单都有（最强信号）: {both_count}只")
+    print(f"   🏆 出现在龙虎榜: {tl_count}只")
 
     # 3. 获取基本数据
     time.sleep(1)

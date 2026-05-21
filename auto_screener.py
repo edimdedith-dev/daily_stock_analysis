@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
-A股双名单综合筛选脚本 v4（T+2埋伏策略版）
-核心逻辑：今天分析 → 明天买入（回调时埋伏）→ 后天卖出
+A股双名单综合筛选脚本 v5（T+2埋伏策略版）
+核心逻辑：今天分析 → 明天买入（回调时）→ 后天卖出
 
-收盘后运行：使用涨停名单（最准确）
-盘中运行：使用实时行情筛选涨幅>9.9%的股票（近似替代）
+收盘后运行（推荐）：
+  - 涨停名单用今天数据（最准确）
+  - 主力资金/龙虎榜用今天数据
+
+盘中运行：
+  - 跳过涨停名单（数据不完整）
+  - 主力资金/龙虎榜用昨天数据（T-1）
+  - 结果仅供参考
 """
 
 import os
 import sys
 import tushare as ts
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 
 TUSHARE_TOKEN = os.environ.get("TUSHARE_TOKEN", "")
@@ -22,15 +28,19 @@ MAX_DAYS = 6
 def get_today():
     return datetime.now().strftime('%Y%m%d')
 
-def is_market_open():
-    """判断现在是否是盘中时间（9:30-15:00）"""
-    now = datetime.now()
-    hour = now.hour
-    minute = now.minute
-    # UTC时间，北京时间=UTC+8
-    # 北京9:30 = UTC 1:30, 北京15:00 = UTC 7:00
-    total_minutes = hour * 60 + minute
-    return 90 <= total_minutes <= 420  # UTC 1:30到7:00
+def get_yesterday():
+    """获取上一个交易日（简单用昨天，非交易日Tushare会自动处理）"""
+    yesterday = datetime.now() - timedelta(days=1)
+    # 如果昨天是周末，往前找
+    while yesterday.weekday() >= 5:
+        yesterday -= timedelta(days=1)
+    return yesterday.strftime('%Y%m%d')
+
+def is_after_close():
+    """判断现在是否是收盘后（北京时间15:00后）UTC 7:00后"""
+    now = datetime.utcnow()
+    total_minutes = now.hour * 60 + now.minute
+    return total_minutes >= 420  # UTC 7:00 = 北京时间15:00
 
 def init_tushare():
     if not TUSHARE_TOKEN:
@@ -42,10 +52,10 @@ def init_tushare():
     return pro
 
 # ============================================================
-# 收盘后：用涨停名单（最准确）
+# 收盘后：涨停名单（今天数据）
 # ============================================================
-def fetch_limit_up_after_close(pro, trade_date):
-    print(f"\n📡 收盘后模式：获取{trade_date}最终涨停名单...")
+def fetch_limit_up(pro, trade_date):
+    print(f"\n📡 获取{trade_date}涨停名单...")
     try:
         df = pro.limit_list_d(trade_date=trade_date, limit_type='U')
         if df is not None and not df.empty:
@@ -56,50 +66,19 @@ def fetch_limit_up_after_close(pro, trade_date):
     except Exception as e:
         print(f"⚠️ limit_list_d失败: {e}")
 
-    # 备用：日线数据
-    print("⚠️ 备用方案：日线数据筛选...")
+    print("⚠️ 备用：日线数据筛选...")
     try:
         df = pro.daily(trade_date=trade_date)
         if df is not None and not df.empty:
-            limit = df[df['pct_chg'] >= 9.9].copy()
-            limit['source'] = 'limit_up'
-            limit['source_weight'] = 0.6
-            limit['days'] = 1
-            print(f"✅ 日线备用：{len(limit)}只")
-            return limit
-    except Exception as e:
-        print(f"❌ 日线备用失败: {e}")
-    return pd.DataFrame()
-
-# ============================================================
-# 盘中：用实时行情筛选（近似替代）
-# ============================================================
-def fetch_limit_up_intraday(pro, trade_date):
-    print(f"\n📡 盘中模式：用实时行情近似筛选涨停股...")
-    print("⚠️ 注意：盘中数据不完整，收盘后结果更准确")
-    try:
-        # 用日线数据获取今日盘中情况
-        df = pro.daily(trade_date=trade_date)
-        if df is not None and not df.empty:
-            # 筛选涨幅超过9.9%
             limit = df[df['pct_chg'] >= 9.9].copy()
             if not limit.empty:
                 limit['source'] = 'limit_up'
                 limit['source_weight'] = 0.6
                 limit['days'] = 1
-                print(f"✅ 盘中实时涨停近似：{len(limit)}只")
+                print(f"✅ 日线备用：{len(limit)}只")
                 return limit
     except Exception as e:
-        print(f"⚠️ 盘中日线数据失败: {e}")
-
-    # 最后备用：用stk_limit获取今日涨停价
-    try:
-        df = pro.stk_limit(trade_date=trade_date)
-        if df is not None and not df.empty:
-            print(f"⚠️ 仅获取到涨停价数据，无法确认是否封板")
-            # 无法判断是否真正涨停，返回空
-    except Exception as e:
-        print(f"❌ stk_limit失败: {e}")
+        print(f"❌ 日线备用失败: {e}")
 
     return pd.DataFrame()
 
@@ -107,7 +86,7 @@ def fetch_limit_up_intraday(pro, trade_date):
 # 主力资金净流入
 # ============================================================
 def fetch_moneyflow_top(pro, trade_date):
-    print(f"\n💰 获取主力资金净流入名单...")
+    print(f"\n💰 获取{trade_date}主力资金净流入...")
     time.sleep(3)
     try:
         df = pro.moneyflow(
@@ -130,7 +109,7 @@ def fetch_moneyflow_top(pro, trade_date):
 # 龙虎榜
 # ============================================================
 def fetch_top_list(pro, trade_date):
-    print(f"\n🏆 获取龙虎榜...")
+    print(f"\n🏆 获取{trade_date}龙虎榜...")
     time.sleep(2)
     try:
         df = pro.top_list(
@@ -189,19 +168,18 @@ def score_stock(row, basics_df, source):
         a = 0
     score += a
 
-    # 因子B：连板动量（30分）T+2核心因子
-    # 2-3板是最佳埋伏点：资金已连续认可，明天回调买，后天大概率续涨
+    # 因子B：连板动量（30分）T+2核心
     days = int(row.get('days', 1) or 1)
     if days == 3:
-        b = 30   # 最佳
+        b = 30
     elif days == 2:
-        b = 28   # 很好
+        b = 28
     elif days == 4:
-        b = 20   # 偏高位
+        b = 20
     elif days == 1:
-        b = 8    # 首板延续性差
+        b = 8
     elif days == 5:
-        b = 10   # 高位风险上升
+        b = 10
     else:
         b = 5
     score += b
@@ -266,7 +244,7 @@ def score_stock(row, basics_df, source):
     else:
         score += 4
 
-    # 因子G：技术形态（5分）基础分
+    # 因子G：技术形态（5分）
     score += 3
 
     # 龙虎榜加分
@@ -301,37 +279,42 @@ def is_rejected(ts_code, days, basics_df):
 # ============================================================
 def main():
     print("=" * 60)
-    print("🚀 A股双名单筛选系统 v4（T+2埋伏策略）")
+    print("🚀 A股双名单筛选系统 v5（T+2埋伏策略）")
     print("策略：今天分析 → 明天买入回调 → 后天卖出")
     print("=" * 60)
 
-    trade_date = get_today()
-    now_hour = datetime.now().hour
-    intraday = is_market_open()
+    today = get_today()
+    yesterday = get_yesterday()
+    after_close = is_after_close()
 
-    print(f"📅 交易日期: {trade_date}")
-    print(f"🕐 当前UTC时间: {datetime.now().strftime('%H:%M')}")
-    if intraday:
-        print("📊 当前处于盘中时间，使用实时近似数据（收盘后更准确）")
+    print(f"📅 今天: {today} | 昨天: {yesterday}")
+    print(f"🕐 当前UTC: {datetime.utcnow().strftime('%H:%M')}")
+
+    if after_close:
+        print("📊 收盘后模式：用今天数据（最准确）")
+        limit_date = today
+        flow_date = today
     else:
-        print("📊 收盘后模式，使用最终涨停数据")
+        print("📊 盘中模式：跳过涨停名单，用昨天资金数据（T-1）")
+        print("⚠️ 建议收盘后（北京时间15:00后）重新运行获取最终结果")
+        limit_date = None  # 盘中跳过涨停名单
+        flow_date = yesterday
 
     pro = init_tushare()
 
-    # 根据时间选择数据获取方式
-    if intraday:
-        limit_up_df = fetch_limit_up_intraday(pro, trade_date)
-    else:
-        limit_up_df = fetch_limit_up_after_close(pro, trade_date)
+    # 获取数据
+    limit_up_df = pd.DataFrame()
+    if limit_date:
+        limit_up_df = fetch_limit_up(pro, limit_date)
 
-    moneyflow_df = fetch_moneyflow_top(pro, trade_date)
-    top_list_df = fetch_top_list(pro, trade_date)
+    moneyflow_df = fetch_moneyflow_top(pro, flow_date)
+    top_list_df = fetch_top_list(pro, flow_date)
 
-    # 检查是否有数据
+    # 检查数据
     if limit_up_df.empty and moneyflow_df.empty:
-        print("\n❌ 今日无有效数据（可能是非交易日或数据未更新）")
-        print("建议收盘后（北京时间15:00后）重新运行")
-        # 输出空文件，让workflow知道没有数据
+        print("\n❌ 今日无有效数据")
+        if not after_close:
+            print("盘中模式下主力资金和龙虎榜数据也为空，请检查Tushare积分或网络")
         with open('screened_stocks.txt', 'w') as f:
             f.write('')
         sys.exit(0)
@@ -373,9 +356,9 @@ def main():
     print(f"   ⭐ 双榜股: {both}只 | 🏆 龙虎榜: {tl}只")
     print(f"   🔥 2连板: {d2}只 | 💥 3连板: {d3}只（T+2最佳目标）")
 
-    # 获取基本数据
+    # 获取基本数据（用flow_date，盘中用昨天）
     stock_list = list(all_stocks.keys())
-    basics_df = fetch_basics(pro, trade_date, stock_list)
+    basics_df = fetch_basics(pro, flow_date, stock_list)
 
     # 评分过滤
     results = []
@@ -403,8 +386,10 @@ def main():
     top20 = results[:MAX_STOCKS]
 
     print("\n" + "=" * 60)
-    print(f"🏆 T+2埋伏策略 Top{len(top20)}")
-    print("明天回调时买入，后天卖出")
+    if after_close:
+        print(f"🏆 T+2埋伏策略 Top{len(top20)}（收盘后完整数据）")
+    else:
+        print(f"🏆 T+2埋伏策略 Top{len(top20)}（盘中参考，基于昨日资金数据）")
     print("=" * 60)
 
     icons = {'limit_up': '🔴涨停', 'moneyflow': '💰流入', 'both': '⭐双榜'}
@@ -425,8 +410,8 @@ def main():
         f.write(result_str)
 
     print(f"\n📝 已写入 screened_stocks.txt")
-    if intraday:
-        print("⚠️ 盘中运行结果仅供参考，建议收盘后重新运行获取最终结果")
+    if not after_close:
+        print("⚠️ 盘中结果仅供参考，收盘后重新运行获取最终结果")
     print("=" * 60)
 
 if __name__ == '__main__':

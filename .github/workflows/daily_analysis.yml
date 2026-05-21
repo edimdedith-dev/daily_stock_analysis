@@ -47,29 +47,21 @@ jobs:
           echo "🚀 开始全市场双名单综合筛选..."
           echo "================================================"
           timeout 300 python auto_screener.py || echo "⚠️ 筛选超时或出错"
-
-          if [ -f screened_stocks.txt ] && [ -s screened_stocks.txt ]; then
-            SCREENED=$(cat screened_stocks.txt)
-            echo "✅ 筛选成功: $SCREENED"
-            echo "STOCK_LIST=$SCREENED" >> $GITHUB_ENV
-            echo "HAS_STOCKS=true" >> $GITHUB_ENV
-          else
-            echo "⚠️ 今日筛选结果为空（可能是盘中运行或非交易日）"
-            echo "HAS_STOCKS=false" >> $GITHUB_ENV
-          fi
+          echo "筛选结果："
+          cat screened_stocks.txt 2>/dev/null || echo "（无结果）"
 
       - name: 📊 第二步：七因子深度分析
         run: |
           echo "================================================"
           echo "🔬 开始深度分析..."
           echo "================================================"
-
-          if [ "$HAS_STOCKS" = "false" ]; then
-            echo "⚠️ 无筛选结果，跳过个股分析，仅输出大盘复盘"
-            timeout 1800 python main.py --market-review || echo "⚠️ 大盘复盘超时"
+          if [ -f screened_stocks.txt ] && [ -s screened_stocks.txt ]; then
+            STOCKS=$(cat screened_stocks.txt)
+            echo "✅ 读取到股票列表: $STOCKS"
+            timeout 1800 python main.py --stocks "$STOCKS" --market-review || echo "⚠️ 分析超时，已强制结束"
           else
-            echo "股票列表: $STOCK_LIST"
-            timeout 1800 python main.py --stocks "$STOCK_LIST" --market-review || echo "⚠️ 分析超时，已强制结束"
+            echo "⚠️ 无筛选结果，仅输出大盘复盘"
+            timeout 1800 python main.py --market-review || echo "⚠️ 超时"
           fi
 
       - name: 上传分析报告
@@ -89,12 +81,8 @@ jobs:
           echo "================================================"
           echo "📊 本次运行完成"
           echo "================================================"
-          if [ -f screened_stocks.txt ] && [ -s screened_stocks.txt ]; then
-            echo "筛选出的股票："
-            cat screened_stocks.txt
-          else
-            echo "今日无筛选结果（盘中运行或非交易日）"
-          fi
+          echo "筛选出的股票："
+          cat screened_stocks.txt 2>/dev/null || echo "无筛选结果"
           echo ""
           echo "生成的报告："
           ls -la reports/ 2>/dev/null || echo "暂无报告"

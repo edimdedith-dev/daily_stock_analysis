@@ -50,7 +50,7 @@ jobs:
           echo "筛选结果："
           cat screened_stocks.txt 2>/dev/null || echo "（无结果）"
 
-      - name: 📊 第二步：七因子深度分析
+      - - name: 📊 第二步：七因子深度分析
         run: |
           echo "================================================"
           echo "🔬 开始深度分析..."
@@ -58,12 +58,12 @@ jobs:
           if [ -f screened_stocks.txt ] && [ -s screened_stocks.txt ]; then
             STOCKS=$(cat screened_stocks.txt)
             echo "✅ 读取到股票列表: $STOCKS"
-            timeout 1800 python main.py --stocks "$STOCKS" --market-review || echo "⚠️ 分析超时，已强制结束"
+            timeout 1800 python main.py --stocks "$STOCKS" || echo "⚠️ 分析超时，已强制结束"
           else
             echo "⚠️ 无筛选结果，仅输出大盘复盘"
             timeout 1800 python main.py --market-review || echo "⚠️ 超时"
           fi
-
+          
       - name: 上传分析报告
         uses: actions/upload-artifact@v4
         if: always()
